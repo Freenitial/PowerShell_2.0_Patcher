@@ -25,7 +25,7 @@ On older builds where PS 2.0 is still available as a Windows Optional Feature, t
 
 -----
 
-### For fully automated installation:
+### For fully automated installation (only duplicate, not patching existing powershell) :
 
 Download `ps2DLC.zip` from [Microsoft](https://download.microsoft.com/download/2b37839b-e146-465a-a78c-c9066609c553/ps2DLC.zip) (or from this repo)
 
