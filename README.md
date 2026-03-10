@@ -4,6 +4,13 @@ Restores the PowerShell 2.0 engine on modern Windows builds where Microsoft has 
 
 On older builds where PS 2.0 is still available as a Windows Optional Feature, the tool simply enables it.
 
+-----
+
+## IF YOU ARE LOOKING TO INSTALL POWERSHELL 2.0 ON XP/VISTA, CHECK THIS REPO : 
+https://github.com/Freenitial/PowerShell-2.0_.NET-4_for_Windows_XP-2003-Vista-2008
+
+-----
+
 <img width="606" height="553" alt="image" src="https://github.com/user-attachments/assets/3925fced-e6c8-4de8-8f09-9c39b0d6a70d" />
 
 ## Quick Start
