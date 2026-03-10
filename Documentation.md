@@ -15,7 +15,7 @@ On older builds where PS 2.0 is still available as a Windows Optional Feature, t
 3. Double-click `PowerShell_2.0_Patcher.bat` (auto-elevates to admin).
 4. Click **Enable** next to ".NET Framework 3.5" if not already installed.
 5. Click **Install** next to "PS 2.0 Engine" to deploy ps2DLC assemblies.
-6. Click **Duplicate Powershell** or **Patch existing PowerShell** to create a patched `powershell2.exe`.
+6. Click **Duplicate Powershell** or **Patch existing PowerShell**.
 7. Click **Open PS 2.0** or create shortcuts from interface.
 
 -----
