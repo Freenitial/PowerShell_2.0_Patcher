@@ -20,7 +20,8 @@ On older builds where PS 2.0 is still available as a Windows Optional Feature, t
 
 ### For fully automated installation:
 
-Download `ps2DLC.zip` from [Microsoft]https://download.microsoft.com/download/2b37839b-e146-465a-a78c-c9066609c553/ps2DLC.zip (or from this repo)
+Download `ps2DLC.zip` from [Microsoft](https://download.microsoft.com/download/2b37839b-e146-465a-a78c-c9066609c553/ps2DLC.zip) (or from this repo)
+
 Place `ps2DLC.zip` next to the script, then run :
 ```
 powershell -ExecutionPolicy Bypass -File Install-PowerShell2Patch.ps1 -Unattended
