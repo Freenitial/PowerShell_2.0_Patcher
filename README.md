@@ -31,7 +31,7 @@ Download `ps2DLC.zip` from [Microsoft](https://download.microsoft.com/download/2
 
 Place `ps2DLC.zip` next to the script, then run :
 ```
-powershell -ExecutionPolicy Bypass -File Install-PowerShell2Patch.ps1 -Unattended
+powershell -ExecutionPolicy Bypass -File PowerShell_2.0_Patcher.bat -Unattended
 ```
 
 ## How It Works
