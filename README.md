@@ -2,6 +2,10 @@
 
 Restores the PowerShell 2.0 engine on modern Windows builds where Microsoft has removed it, by patching the native `powershell.exe` stub.
 
+2 ways are possible :
+- By duplicating powershell : Creates powershell2.exe. To use PS 2.0, call `powershell2 -version 2`
+- By patching powershell : Replace existing powershell.exe. To use PS 2.0, call `powershell -version 2`
+
 On older builds where PS 2.0 is still available as a Windows Optional Feature, the tool simply enables it.
 
 -----
