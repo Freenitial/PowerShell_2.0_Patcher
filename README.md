@@ -6,7 +6,7 @@ On older builds where PS 2.0 is still available as a Windows Optional Feature, t
 
 -----
 
-## IF YOU ARE LOOKING TO INSTALL POWERSHELL 2.0 ON XP/VISTA, CHECK THIS REPO : 
+## IF YOU ARE LOOKING TO INSTALL POWERSHELL 2.0 ON XP/VISTA : 
 https://github.com/Freenitial/PowerShell-2.0_.NET-4_for_Windows_XP-2003-Vista-2008
 
 -----
