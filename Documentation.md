@@ -18,7 +18,7 @@ On older builds where PS 2.0 is still available as a Windows Optional Feature, t
 2. *(Optional)* Place `ps2DLC.zip` next to the script.
 3. Double-click `PowerShell_2.0_Patcher.bat` (auto-elevates to admin).
 4. Click **Enable** next to ".NET Framework 3.5" if not already installed.
-5. Click **Install** next to "PS 2.0 Engine" to deploy ps2DLC assemblies.
+5. Click **Install** next to "PS 2.0 Engine" to deploy ps2DLC assemblies and create WoW64 registry entries.
 6. Click **Duplicate Powershell** or **Patch existing PowerShell**.
 7. Click **Open PS 2.0** or create shortcuts from interface.
 
@@ -115,6 +115,16 @@ Each block is patched by:
 
 The version overrides in the x86 binary use varying ModRM encodings across blocks (`C7 07` = `[edi]`, `C7 45 xx` = `[ebp+disp8]`, `C7 00` = `[eax]`), which is why a forward-scan with ModRM decoding is used instead of a fixed pattern.
 
+### WoW64 Registry Mirror (64-bit OS)
+
+The x86 `powershell.exe` in `SysWOW64` uses `RegOpenKeyExW` with `KEY_READ` (0x20019) — no `KEY_WOW64_64KEY` flag. Windows therefore redirects the call to `WoW6432Node`:
+```
+SOFTWARE\Microsoft\PowerShell\1\PowerShellEngine
+  → WoW6432Node\Microsoft\PowerShell\1\PowerShellEngine
+```
+
+Microsoft's ps2DLC package only creates the key in the native 64-bit registry view. The tool creates a mirror under `WoW6432Node` with `reg add /reg:32`, pointing `ApplicationBase` and `ConsoleHostModuleName` to `SysWOW64\WindowsPowerShell\v1.0`. The managed assemblies themselves are architecture-neutral (`GAC_MSIL`) and shared by both architectures.
+
 ### Patching Strategies
 
 | Strategy | Action | Survives CU | Requires Ownership |
@@ -185,11 +195,17 @@ The package contains:
   - `ConsoleHostAssemblyName = Microsoft.PowerShell.ConsoleHost, Version=1.0.0.0, ...`
   - `ShellIds\Microsoft.PowerShell\ExecutionPolicy = Bypass`
 
+  > **Note :** The `.reg` files only write to the native 64-bit registry view. On 64-bit systems, the tool additionally creates a mirror under `WoW6432Node` via `reg add /reg:32` so that the x86 `powershell.exe` (WoW64) can find `PowerShell\1\PowerShellEngine`. Without this mirror, the x86 patch fails with "Registry key not found".
+
 ## GUI Features
 
 ### Polyglot BAT/PS1 Launcher
 
 The script is a polyglot: the `.bat` extension makes it double-clickable, the batch header checks Windows version (displays an HTA dialog if < Windows 10), auto-elevates to admin, then executes the embedded PowerShell code.
+
+### Unified Async DISM Wrapper
+
+All DISM feature operations (enable/disable .NET 3.5 and PS 2.0) use a single `Invoke-DismFeatureCommand` function that handles both GUI and unattended modes. In GUI mode, `dism.exe` runs as an async process with `ProcessOutputCollector` and a `DoEvents` polling loop to keep the interface responsive. Progress bars are overwritten in-place in the log RichTextBox. In unattended mode, output is piped synchronously with carriage-return progress on the console.
 
 ### Async DISM Progress
 
@@ -235,7 +251,9 @@ Click **Uninstall Patch** to remove all artifacts:
 - **Duplicate mode**: deletes `powershell2.exe`
 - **In-place mode**: renames the patched exe out of the way (NTFS rename trick), restores the `.bak` backup, restores TrustedInstaller ACL
 - **Both present**: handles the combination (duplicate removed, then backup restored)
+- **ps2DLC**: removes GAC assemblies via the fusion API (`GacRemove`), with raw deletion as fallback. Resource DLLs are cleaned up from `GAC_MSIL`. Registry keys are removed from both the native 64-bit view and the `WoW6432Node` 32-bit view. If assemblies are locked (loaded by a running process), the tool reports partial removal — registry is always cleaned, locked assemblies can be retried or will be cleared on reboot
 - **Shortcuts**: removes all known shortcut names from the specified directory
+- **Prerequisites**: each prerequisite row has an **Install**/**Uninstall** (or **Enable**/**Disable**) toggle button that reflects the current state
 
 On feature-available systems, uninstall disables the `MicrosoftWindowsPowerShellV2Root` optional feature via DISM.
 
@@ -246,6 +264,8 @@ On feature-available systems, uninstall disables the `MicrosoftWindowsPowerShell
 - **Pattern compatibility**: if a future build restructures the native stub, the byte patterns may not match. The tool detects this and aborts without making changes.
 - **CLR2 removal**: if Microsoft removes the CLR2 runtime itself (not just the PS 2.0 feature), the patch will no longer work.
 - **x86 on 32-bit OS**: the x86 pattern has been verified on 64-bit WoW64 builds. 32-bit native Windows 10 builds have not been tested.
+- **WoW64 registry**: if the `WoW6432Node\Microsoft\PowerShell\1` key is deleted externally (e.g. registry cleaner), the x86 patch will stop working. Click **Install** (or re-run with `-Unattended`) to recreate the mirror.
+- **GAC uninstall**: some ps2DLC assemblies may be locked by running PowerShell processes or system services. The tool uses the fusion API (`GacRemove`) with raw deletion as fallback, but locked DLLs may persist until reboot. Registry keys are always cleaned regardless.
 
 ## Technical Reference
 
@@ -253,7 +273,7 @@ On feature-available systems, uninstall disables the `MicrosoftWindowsPowerShell
 
 | Offset (x64) | String | Purpose |
 |--------------|--------|---------|
-| `.rdata` | `SOFTWARE\Microsoft\PowerShell\%1!ls!\PowerShellEngine` | Registry path format string |
+| `.rdata` | `SOFTWARE\Microsoft\PowerShell\%1!ls!\PowerShellEngine` | Registry path format string (opened with `RegOpenKeyExW` + `KEY_READ`, subject to WoW64 redirection on x86) |
 | `.rdata` | `RuntimeVersion` | Registry value for CLR version selection |
 | `.rdata` | `PowerShellVersion` | Registry value for engine version |
 | `.rdata` | `version` | CLI argument name |
@@ -268,7 +288,7 @@ The native stub imports from 6 DLLs:
 | DLL | Relevant APIs |
 |-----|---------------|
 | `KERNEL32.dll` | `GetVersionExW`, `VerifyVersionInfoW` |
-| `ADVAPI32.dll` | `RegQueryValueExW` |
+| `ADVAPI32.dll` | `RegQueryValueExW`, `RegOpenKeyExW`, `RegGetValueW` |
 | `mscoree.dll` | CLR hosting (`CorBindToRuntimeEx`) |
 | `USER32.dll` | Message display |
 | `OLE32.dll` / `OLEAUT32.dll` | COM initialization |
@@ -282,8 +302,18 @@ The deprecation warning is MUI resource string #40 (0x28), stored in satellite f
 - `...\fr-FR\powershell.exe.mui`
 - (other locales)
 
+### Registry Views (64-bit OS)
+
+| API call | `samDesired` / flags | WoW64 redirect | Used for |
+|----------|---------------------|----------------|----------|
+| `RegGetValueW` | `RRF_SUBKEY_WOW6464KEY` (0x10000) | No — reads native 64-bit | Hardcoded `PowerShell\3` path |
+| `RegOpenKeyExW` | `KEY_READ` (0x20019) | Yes — reads `WoW6432Node` | Format-string `PowerShell\%d` path |
+
+This is why the x86 patch requires a `WoW6432Node\Microsoft\PowerShell\1\PowerShellEngine` mirror: after patching version 3→1, the format-string path resolves to `PowerShell\1\PowerShellEngine`, which `RegOpenKeyExW` (without `KEY_WOW64_64KEY`) redirects to `WoW6432Node`.
+
 ### Execution Flow After Patch
 
+#### x64 (PE32+)
 ```
 powershell2.exe -Version 2
   │
@@ -294,7 +324,24 @@ powershell2.exe -Version 2
   ├─ Registry path: SOFTWARE\Microsoft\PowerShell\1\PowerShellEngine
   ├─ RegQueryValueEx: RuntimeVersion = "v2.0.50727"
   ├─ mscoree.dll CorBindToRuntimeEx("v2.0.50727") → CLR2 activated
-  ├─ Loads System.Management.Automation 1.0 from legacy GAC
+  ├─ Loads System.Management.Automation 1.0 from legacy GAC (GAC_MSIL)
+  └─ PowerShell 2.0 engine running
+```
+
+#### x86 on 64-bit OS (PE32, WoW64)
+```
+powershell2.exe -Version 2                          [SysWOW64, 32-bit process]
+  │
+  ├─ Native stub parses arguments → version = 2
+  ├─ Deprecation block 1: version ≤ 2 → enters block
+  │   ├─ [PATCHED] Warning calls: NOP'd (8 bytes)
+  │   └─ [PATCHED] Version override: 2 → 1 (forward-scan, ModRM-decoded)
+  ├─ Deprecation block 2: same treatment
+  ├─ Registry path: SOFTWARE\Microsoft\PowerShell\1\PowerShellEngine
+  │   └─ RegOpenKeyExW(KEY_READ) → WoW64 redirects to WoW6432Node\...\1\PowerShellEngine
+  ├─ RegQueryValueEx: RuntimeVersion = "v2.0.50727"
+  ├─ mscoree.dll CorBindToRuntimeEx("v2.0.50727") → CLR2 (32-bit) activated
+  ├─ Loads System.Management.Automation 1.0 from legacy GAC (GAC_MSIL, arch-neutral)
   └─ PowerShell 2.0 engine running
 ```
 
