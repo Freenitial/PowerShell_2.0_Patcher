@@ -1,7 +1,7 @@
 <# :
     @echo off & Title PowerShell 2.0 Patcher & set args=%*
     :: Author : Leo Gillet / Freenitial on GitHub
-    :: Version : 1.0
+    :: Version : 1.1
 
     :: Windows version check
     for /f "tokens=2 delims=[]" %%v in ('ver') do for /f "tokens=2 delims=. " %%m in ("%%v") do set "WINMAJOR=%%m"
@@ -197,6 +197,7 @@ $pathSysWOW64Ps      = [System.IO.Path]::Combine($env:SystemRoot, 'SysWOW64', 'W
 $patchedExeName      = 'powershell2.exe'
 $backupExeSuffix     = '.bak'
 $registryKeyPath     = 'HKLM:\SOFTWARE\Microsoft\PowerShell\1\PowerShellEngine'
+$registryKeyBasePath = 'HKLM:\SOFTWARE\Microsoft\PowerShell\1'
 $scriptDirectory     = if ($batFile) { $batFile } else { $PSScriptRoot }
 $ps2DlcZipPath       = [System.IO.Path]::Combine($scriptDirectory, 'ps2DLC.zip')
 $defaultShortcutDir  = [Environment]::GetFolderPath('Desktop')
@@ -333,6 +334,62 @@ function Set-PrereqIcon {
     }
 }
 
+function Test-Wow64RegistryPresent {
+    # Checks if PowerShell\1\PowerShellEngine exists in the 32-bit registry view (WoW6432Node).
+    # Returns $true on 32-bit OS (no WoW64 redirection needed) or if the key exists.
+    if (-not $isOs64Bit) { return $true }
+    try {
+        $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
+            [Microsoft.Win32.RegistryHive]::LocalMachine,
+            [Microsoft.Win32.RegistryView]::Registry32
+        )
+        $subKey = $baseKey.OpenSubKey('SOFTWARE\Microsoft\PowerShell\1\PowerShellEngine')
+        $result = ($null -ne $subKey)
+        if ($null -ne $subKey) { $subKey.Close() }
+        $baseKey.Close()
+        return $result
+    } catch { return $false }
+}
+
+function Install-Wow64RegistryMirror {
+    # Creates the PowerShell\1 registry keys in the 32-bit view (WoW6432Node) for x86 WoW64 processes.
+    # The x86 powershell.exe uses RegOpenKeyExW without KEY_WOW64_64KEY, so it reads from WoW6432Node.
+    if (-not $isOs64Bit) { return $true }
+    Write-Log 'Creating 32-bit registry mirror (WoW6432Node\PowerShell\1)...'
+    $regCommands = @(
+        @('add', 'HKLM\SOFTWARE\Microsoft\PowerShell\1', '/v', 'Install', '/t', 'REG_DWORD', '/d', '1', '/f', '/reg:32'),
+        @('add', 'HKLM\SOFTWARE\Microsoft\PowerShell\1', '/v', 'PID', '/t', 'REG_SZ', '/d', '89383-100-0001260-04309', '/f', '/reg:32'),
+        @('add', 'HKLM\SOFTWARE\Microsoft\PowerShell\1\PowerShellEngine', '/v', 'ApplicationBase', '/t', 'REG_SZ', '/d', "$env:SystemRoot\SysWOW64\WindowsPowerShell\v1.0", '/f', '/reg:32'),
+        @('add', 'HKLM\SOFTWARE\Microsoft\PowerShell\1\PowerShellEngine', '/v', 'ConsoleHostAssemblyName', '/t', 'REG_SZ', '/d', 'Microsoft.PowerShell.ConsoleHost, Version=1.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35, ProcessorArchitecture=msil', '/f', '/reg:32'),
+        @('add', 'HKLM\SOFTWARE\Microsoft\PowerShell\1\PowerShellEngine', '/v', 'ConsoleHostModuleName', '/t', 'REG_SZ', '/d', "$env:SystemRoot\SysWOW64\WindowsPowerShell\v1.0\Microsoft.PowerShell.ConsoleHost.dll", '/f', '/reg:32'),
+        @('add', 'HKLM\SOFTWARE\Microsoft\PowerShell\1\PowerShellEngine', '/v', 'PowerShellVersion', '/t', 'REG_SZ', '/d', '2.0', '/f', '/reg:32'),
+        @('add', 'HKLM\SOFTWARE\Microsoft\PowerShell\1\PowerShellEngine', '/v', 'PSCompatibleVersion', '/t', 'REG_SZ', '/d', '1.0, 2.0', '/f', '/reg:32'),
+        @('add', 'HKLM\SOFTWARE\Microsoft\PowerShell\1\PowerShellEngine', '/v', 'RuntimeVersion', '/t', 'REG_SZ', '/d', 'v2.0.50727', '/f', '/reg:32'),
+        @('add', 'HKLM\SOFTWARE\Microsoft\PowerShell\1\ShellIds\Microsoft.PowerShell', '/v', 'Path', '/t', 'REG_SZ', '/d', "$env:SystemRoot\SysWOW64\WindowsPowerShell\v1.0\powershell.exe", '/f', '/reg:32'),
+        @('add', 'HKLM\SOFTWARE\Microsoft\PowerShell\1\ShellIds\Microsoft.PowerShell', '/v', 'ExecutionPolicy', '/t', 'REG_SZ', '/d', 'Bypass', '/f', '/reg:32')
+    )
+    $allOk = $true
+    foreach ($cmd in $regCommands) {
+        $output = & reg @cmd 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Log "  reg $($cmd[0]) failed : $output" 'Error'
+            $allOk = $false
+        }
+    }
+    if ($allOk) { Write-Log '  WoW6432Node registry mirror created.' }
+    else { Write-Log '  WoW6432Node registry mirror incomplete.' 'Warning' }
+    return $allOk
+}
+
+function Uninstall-Wow64RegistryMirror {
+    # Removes the PowerShell\1 tree from the 32-bit registry view (WoW6432Node).
+    if (-not $isOs64Bit) { return }
+    Write-Log '  Removing 32-bit registry mirror (WoW6432Node\PowerShell\1)...'
+    $output = & reg delete 'HKLM\SOFTWARE\Microsoft\PowerShell\1' /f /reg:32 2>&1
+    if ($LASTEXITCODE -eq 0) { Write-Log '  WoW6432Node registry mirror removed.' }
+    else { Write-Log "  WoW6432Node removal : $output" 'Debug' }
+}
+
 function Disable-AllActionButtons {
     # Disables every action button during an operation to prevent concurrent execution.
     $btnNetFx3.Enabled = $false
@@ -410,20 +467,31 @@ function Get-DismErrorMessage {
     }
 }
 
-function Install-NetFx3Feature {
-    # Enables .NET 3.5 via dism.exe with real-time progress.
-    # GUI mode   : async via ProcessOutputCollector + WinForms Timer, single-line progress.
-    # Unattended : synchronous dism.exe, output piped directly to console.
+function Invoke-DismFeatureCommand {
+    # Unified async DISM wrapper for Enable/Disable feature operations.
+    # GUI mode : async process with DoEvents polling loop and RichTextBox progress overwrite.
+    # Unattended : synchronous dism.exe with console carriage-return progress.
+    param(
+        [ValidateSet('Enable','Disable')][string]$Action,
+        [string]$FeatureName,
+        [string]$FriendlyName = $FeatureName
+    )
+    $dismArgs = if ($Action -eq 'Enable') {
+        "/Online /Enable-Feature /FeatureName:$FeatureName /All /NoRestart"
+    } else {
+        "/Online /Disable-Feature /FeatureName:$FeatureName /NoRestart"
+    }
+    $pastTense = if ($Action -eq 'Enable') { 'enabled' } else { 'disabled' }
+    Write-Log "$Action $FriendlyName via DISM..."
     if (-not $script:GuiMode) {
-        Write-Log 'Installing .NET Framework 3.5 via DISM...'
+        # Unattended : synchronous with console progress
         $script:dismLastWasProgress = $false
-        & "$env:SystemRoot\System32\dism.exe" /Online /Enable-Feature /FeatureName:NetFx3 /All /NoRestart 2>&1 | ForEach-Object {
+        & "$env:SystemRoot\System32\dism.exe" $dismArgs.Split(' ') 2>&1 | ForEach-Object {
             $line = "$_"
             if ([string]::IsNullOrWhiteSpace($line)) { return }
             $trimmed = $line.Trim()
             $isProgress = ($trimmed.StartsWith('[') -and $trimmed.EndsWith(']'))
             if ($isProgress) {
-                # Overwrite the same console line with carriage return
                 Write-Host "`r  $($trimmed.PadRight(60))" -NoNewline
                 $script:dismLastWasProgress = $true
             } else {
@@ -432,18 +500,14 @@ function Install-NetFx3Feature {
             }
         }
         if ($script:dismLastWasProgress) { Write-Host '' }
-        if ($LASTEXITCODE -eq 0) { Write-Log '.NET 3.5 enabled.'; return $true }
-        elseif ($LASTEXITCODE -eq 3010) { Write-Log '.NET 3.5 enabled (RESTART REQUIRED).' 'Warning'; return $true }
-        else {
-            Write-Log (Get-DismErrorMessage $LASTEXITCODE) 'Error'
-            return $false
-        }
+        if ($LASTEXITCODE -eq 0) { Write-Log "$FriendlyName $pastTense."; return $true }
+        elseif ($LASTEXITCODE -eq 3010) { Write-Log "$FriendlyName $pastTense (RESTART REQUIRED)." 'Warning'; return $true }
+        else { Write-Log (Get-DismErrorMessage $LASTEXITCODE) 'Error'; return $false }
     }
-    # GUI mode : async with progress
-    Write-Log 'Enabling .NET Framework 3.5 via DISM...'
+    # GUI mode : async with ProcessOutputCollector and DoEvents polling
     $startInfo = New-Object System.Diagnostics.ProcessStartInfo
     $startInfo.FileName  = [System.IO.Path]::Combine($env:SystemRoot, 'System32', 'dism.exe')
-    $startInfo.Arguments = '/Online /Enable-Feature /FeatureName:NetFx3 /All /NoRestart'
+    $startInfo.Arguments = $dismArgs
     $startInfo.UseShellExecute = $false
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError  = $true
@@ -451,29 +515,22 @@ function Install-NetFx3Feature {
     $oemEnc = [System.Text.Encoding]::GetEncoding([System.Globalization.CultureInfo]::CurrentCulture.TextInfo.OEMCodePage)
     $startInfo.StandardOutputEncoding = $oemEnc
     $startInfo.StandardErrorEncoding  = $oemEnc
-    try { $script:dismProc = [System.Diagnostics.Process]::Start($startInfo) }
+    try { $proc = [System.Diagnostics.Process]::Start($startInfo) }
     catch { Write-Log "ERROR launching DISM : $($_.Exception.Message)" 'Error'; return $false }
     $stdoutCol = New-Object ProcessOutputCollector
     $stderrCol = New-Object ProcessOutputCollector
-    $script:dismProc.add_OutputDataReceived($stdoutCol.GetHandler())
-    $script:dismProc.BeginOutputReadLine()
-    $script:dismProc.add_ErrorDataReceived($stderrCol.GetHandler())
-    $script:dismProc.BeginErrorReadLine()
-    # Track inline progress bar position for single-line overwrite
+    $proc.add_OutputDataReceived($stdoutCol.GetHandler())
+    $proc.BeginOutputReadLine()
+    $proc.add_ErrorDataReceived($stderrCol.GetHandler())
+    $proc.BeginErrorReadLine()
     $script:dismProgressIdx = -1
-    $script:dismDone = $false
-    $script:dismOk   = $false
-    $uiTimer = New-Object System.Windows.Forms.Timer
-    $uiTimer.Interval = 100
-    $uiTimer.Add_Tick({
+    while (-not $proc.HasExited) {
         $line = $null
         while ($stdoutCol.Lines.TryDequeue([ref]$line)) {
             if ([string]::IsNullOrWhiteSpace($line)) { continue }
             $trimmed = $line.Trim()
-            # DISM progress lines look like "[====   50.0%   ====]"
             $isProg = ($trimmed.StartsWith('[') -and $trimmed.EndsWith(']'))
             if ($isProg) {
-                # Overwrite the previous progress line in the RichTextBox
                 if ($script:dismProgressIdx -ge 0) {
                     $script:LogRichTextBox.Select($script:dismProgressIdx, $script:LogRichTextBox.TextLength - $script:dismProgressIdx)
                     $script:LogRichTextBox.SelectedText = "  $trimmed"
@@ -483,7 +540,6 @@ function Install-NetFx3Feature {
                 }
                 $script:LogRichTextBox.Select($script:LogRichTextBox.TextLength, 0)
             } else {
-                # Regular line : finalize any pending progress, then append
                 if ($script:dismProgressIdx -ge 0) {
                     $script:LogRichTextBox.AppendText("`r`n")
                     $script:dismProgressIdx = -1
@@ -492,39 +548,46 @@ function Install-NetFx3Feature {
             }
             $script:LogRichTextBox.ScrollToCaret()
         }
-        # Check if the DISM process has finished and all output has been drained
-        if ($script:dismProc.HasExited -and $stdoutCol.Lines.IsEmpty -and $stderrCol.Lines.IsEmpty) {
-            $uiTimer.Stop()
-            if ($script:dismProgressIdx -ge 0) {
-                $script:LogRichTextBox.AppendText("`r`n")
-                $script:dismProgressIdx = -1
-            }
-            $exitCode = $script:dismProc.ExitCode
-            $script:dismProc.Dispose()
-            if ($exitCode -eq 0) {
-                Write-Log '.NET Framework 3.5 enabled.'
-                $script:dismOk = $true
-            } elseif ($exitCode -eq 3010) {
-                Write-Log '.NET 3.5 enabled but RESTART REQUIRED.' 'Warning'
-                [System.Windows.Forms.MessageBox]::Show(
-                    ".NET Framework 3.5 installed but a restart is required.`nPlease reboot and run this tool again.",
-                    'Restart Required', 'OK', 'Warning') | Out-Null
-                $script:dismOk = $true
-            } else {
-                Write-Log (Get-DismErrorMessage $exitCode) 'Error'
-                $script:dismOk = $false
-            }
-            $script:dismDone = $true
-        }
-    })
-    $uiTimer.Start()
-    # Block the caller while pumping the message loop (keeps GUI responsive)
-    while (-not $script:dismDone) {
         [System.Windows.Forms.Application]::DoEvents()
-        [System.Threading.Thread]::Sleep(15)
+        [System.Threading.Thread]::Sleep(50)
     }
-    $uiTimer.Dispose()
-    return $script:dismOk
+    # Drain remaining output after exit
+    [System.Threading.Thread]::Sleep(100)
+    $line = $null
+    while ($stdoutCol.Lines.TryDequeue([ref]$line)) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        $trimmed = $line.Trim()
+        if ($script:dismProgressIdx -ge 0 -and -not ($trimmed.StartsWith('[') -and $trimmed.EndsWith(']'))) {
+            $script:LogRichTextBox.AppendText("`r`n")
+            $script:dismProgressIdx = -1
+        }
+        $script:LogRichTextBox.AppendText("  $trimmed`r`n")
+        $script:LogRichTextBox.ScrollToCaret()
+    }
+    if ($script:dismProgressIdx -ge 0) {
+        $script:LogRichTextBox.AppendText("`r`n")
+        $script:dismProgressIdx = -1
+    }
+    $exitCode = $proc.ExitCode
+    $proc.Dispose()
+    if ($exitCode -eq 0) {
+        Write-Log "$FriendlyName $pastTense."
+        return $true
+    } elseif ($exitCode -eq 3010) {
+        Write-Log "$FriendlyName $pastTense (RESTART REQUIRED)." 'Warning'
+        [System.Windows.Forms.MessageBox]::Show(
+            "$FriendlyName $pastTense but a restart is required.`nPlease reboot and run this tool again.",
+            'Restart Required', 'OK', 'Warning') | Out-Null
+        return $true
+    } else {
+        Write-Log (Get-DismErrorMessage $exitCode) 'Error'
+        return $false
+    }
+}
+
+function Install-NetFx3Feature {
+    # Enables .NET 3.5 via DISM (delegates to shared async wrapper).
+    return (Invoke-DismFeatureCommand -Action 'Enable' -FeatureName $featureNameNetFx3 -FriendlyName '.NET Framework 3.5')
 }
 
 # ============================================================================
@@ -532,24 +595,8 @@ function Install-NetFx3Feature {
 # ============================================================================
 
 function Install-Ps2Feature {
-    Write-Log 'Enabling PowerShell 2.0 feature...'
-    try {
-        $result = Enable-WindowsOptionalFeature -Online -FeatureName $featureNameRoot -All -NoRestart -ErrorAction Stop
-        if ($result.RestartNeeded) {
-            Write-Log 'PS 2.0 feature enabled but RESTART REQUIRED.' 'Warning'
-            if ($script:GuiMode) {
-                [System.Windows.Forms.MessageBox]::Show(
-                    "PowerShell 2.0 feature enabled but a restart is required.`nPlease reboot and run this tool again.",
-                    'Restart Required', 'OK', 'Warning') | Out-Null
-            }
-        } else {
-            Write-Log 'PS 2.0 feature enabled.'
-        }
-        return $true
-    } catch {
-        Write-Log "ERROR : $($_.Exception.Message)" 'Error'
-        return $false
-    }
+    # Enables PS 2.0 Windows Feature via DISM (delegates to shared async wrapper).
+    return (Invoke-DismFeatureCommand -Action 'Enable' -FeatureName $featureNameRoot -FriendlyName 'PowerShell 2.0')
 }
 
 # ============================================================================
@@ -603,18 +650,22 @@ function Install-Ps2DlcPackage {
             }
         }
     }
-    # Registry import
+    # Registry import (native 64-bit view)
     Write-Log 'Importing registry (PowerShell\1)...'
     $reg1 = [System.IO.Path]::Combine($ps2Root, 'regkeysNew', 'regkeyPowerShell.reg')
     $reg2 = [System.IO.Path]::Combine($ps2Root, 'regkeysNew', 'regkeyPowerShellEngine.reg')
     if ([System.IO.File]::Exists($reg1)) { reg import $reg1 2>&1 | Out-Null }
     if ([System.IO.File]::Exists($reg2)) { reg import $reg2 2>&1 | Out-Null }
+    # 32-bit registry mirror for x86 processes on 64-bit OS
+    Install-Wow64RegistryMirror | Out-Null
     # Cleanup temp extraction folder
     try { [System.IO.Directory]::Delete($extractPath, $true) } catch { }
     # Verify installation
-    $gacOk = [System.IO.Directory]::Exists([System.IO.Path]::Combine($env:SystemRoot, 'assembly', 'GAC_MSIL', 'System.Management.Automation'))
-    $regOk = $null -ne (Get-ItemProperty -Path $registryKeyPath -ErrorAction SilentlyContinue)
-    if ($gacOk -and $regOk) { Write-Log 'ps2DLC installed.'; return $true }
+    $gacOk    = [System.IO.Directory]::Exists([System.IO.Path]::Combine($env:SystemRoot, 'assembly', 'GAC_MSIL', 'System.Management.Automation'))
+    $regOk    = $null -ne (Get-ItemProperty -Path $registryKeyPath -ErrorAction SilentlyContinue)
+    $wow64Ok  = Test-Wow64RegistryPresent
+    if ($gacOk -and $regOk -and $wow64Ok) { Write-Log 'ps2DLC installed.'; return $true }
+    elseif ($gacOk -and $regOk) { Write-Log 'ps2DLC installed (WoW6432Node registry missing).' 'Warning'; return $true }
     else { Write-Log 'ps2DLC installation may be incomplete.' 'Warning'; return $false }
 }
 
@@ -866,6 +917,94 @@ function Uninstall-BinaryPatch {
     if (-not $did -and -not $state.HasOrphanPatch) { Write-Log "  Nothing to remove ($ArchLabel)." }
 }
 
+function Uninstall-Ps2DlcPackage {
+    # Removes all ps2DLC artifacts : GAC assemblies (via fusion API), resource DLLs, and registry keys (both views).
+    Write-Log '--- ps2DLC ---'
+    $ps2AssemblyNames = @(
+        'System.Management.Automation',
+        'Microsoft.PowerShell.ConsoleHost',
+        'Microsoft.PowerShell.Commands.Management',
+        'Microsoft.PowerShell.Commands.Utility',
+        'Microsoft.PowerShell.Commands.Diagnostics',
+        'Microsoft.PowerShell.Security',
+        'Microsoft.WSMan.Management',
+        'Microsoft.WSMan.Runtime'
+    )
+    # Load GAC API for proper removal via fusion
+    $gac = $null
+    try {
+        [System.Reflection.Assembly]::Load('System.EnterpriseServices, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a') | Out-Null
+        $gac = New-Object System.EnterpriseServices.Internal.Publish
+    } catch { Write-Log "  GAC API unavailable, will attempt raw deletion." 'Warning' }
+    $gacRoot = [System.IO.Path]::Combine($env:SystemRoot, 'assembly', 'GAC_MSIL')
+    $gacFailures = 0
+    foreach ($asmName in $ps2AssemblyNames) {
+        $asmDir = [System.IO.Path]::Combine($gacRoot, $asmName)
+        $v1Dir = [System.IO.Path]::Combine($asmDir, '1.0.0.0__31bf3856ad364e35')
+        if ([System.IO.Directory]::Exists($v1Dir)) {
+            $removed = $false
+            # Primary method : GacRemove via fusion API
+            if ($null -ne $gac) {
+                foreach ($dllPath in [System.IO.Directory]::GetFiles($v1Dir, '*.dll')) {
+                    try { $gac.GacRemove($dllPath) } catch { }
+                }
+                # Verify removal
+                if (-not [System.IO.Directory]::Exists($v1Dir) -or
+                    ([System.IO.Directory]::GetFiles($v1Dir, '*.dll').Count -eq 0)) {
+                    $removed = $true
+                }
+            }
+            # Fallback : raw deletion
+            if (-not $removed) {
+                try {
+                    [System.IO.Directory]::Delete($v1Dir, $true)
+                    $removed = $true
+                } catch { }
+            }
+            if ($removed) { Write-Log "  Removed GAC : $asmName\1.0.0.0" 'Debug' }
+            else { Write-Log "  Failed to remove GAC : $asmName (locked or protected)" 'Warning'; $gacFailures++ }
+        }
+        # Resource DLLs (same dual approach)
+        $resDir = [System.IO.Path]::Combine($gacRoot, "$asmName.resources")
+        if ([System.IO.Directory]::Exists($resDir)) {
+            $resRemoved = $false
+            if ($null -ne $gac) {
+                foreach ($dllPath in [System.IO.Directory]::GetFiles($resDir, '*.dll', [System.IO.SearchOption]::AllDirectories)) {
+                    try { $gac.GacRemove($dllPath) } catch { }
+                }
+                if (-not [System.IO.Directory]::Exists($resDir) -or
+                    ([System.IO.Directory]::GetFiles($resDir, '*.dll', [System.IO.SearchOption]::AllDirectories).Count -eq 0)) {
+                    $resRemoved = $true
+                }
+            }
+            if (-not $resRemoved) {
+                try { [System.IO.Directory]::Delete($resDir, $true); $resRemoved = $true } catch { }
+            }
+            if ($resRemoved) { Write-Log "  Removed GAC resources : $asmName.resources" 'Debug' }
+            else { Write-Log "  Failed to remove GAC resources : $asmName.resources" 'Warning' }
+        }
+        # Cleanup empty parent
+        if ([System.IO.Directory]::Exists($asmDir) -and ([System.IO.Directory]::GetFileSystemEntries($asmDir).Count -eq 0)) {
+            try { [System.IO.Directory]::Delete($asmDir) } catch { }
+        }
+    }
+    # Registry keys (always proceed, even if GAC partially failed)
+    Write-Log '  Removing registry (PowerShell\1)...'
+    if (Test-Path $registryKeyBasePath) {
+        try {
+            Remove-Item -Path $registryKeyBasePath -Recurse -Force -ErrorAction Stop
+            Write-Log '  Registry key removed (native view).'
+        } catch { Write-Log "  Failed to remove registry key : $($_.Exception.Message)" 'Warning' }
+    }
+    Uninstall-Wow64RegistryMirror
+    if ($gacFailures -gt 0) {
+        Write-Log "  ps2DLC partially removed ($gacFailures assemblies locked, registry cleaned)." 'Warning'
+        Write-Log '  Locked assemblies will be removed on next reboot or can be retried.' 'Warning'
+    } else {
+        Write-Log '  ps2DLC removed.'
+    }
+}
+
 function Uninstall-Shortcuts {
     # Removes PS2 shortcut files from a directory (tries multiple naming conventions)
     param([string]$Dir)
@@ -1037,7 +1176,13 @@ if ($Unattended) {
         if (-not $dlcReady) {
             $dlcReady = Install-Ps2DlcPackage
             if (-not $dlcReady) { $script:UnattendedErrors++ }
-        } else { Write-Log 'ps2DLC already installed.' }
+        } else {
+            Write-Log 'ps2DLC already installed.'
+            # Ensure WoW6432Node mirror exists even if ps2DLC was installed by a previous version
+            if (-not (Test-Wow64RegistryPresent)) {
+                Install-Wow64RegistryMirror | Out-Null
+            }
+        }
         if ($dlcReady) {
             Write-LogSeparator
             # Patch x64
@@ -1673,9 +1818,26 @@ function Update-ButtonStates {
         $anyInPlace = ($stX64.HasInPlace -or $stX86.HasInPlace -or $stX64.HasOrphanPatch -or $stX86.HasOrphanPatch)
         $script:AnyInstalled = ($anyDup -or $anyInPlace)
         if ($null -ne $chkX64) { $chkX64.Enabled = $script:AllPrereqsMet }
-        if ($null -ne $chkX86) { $chkX86.Enabled = $script:AllPrereqsMet }
-        if ($null -ne $btnDuplicate) { $btnDuplicate.Enabled = ($script:AllPrereqsMet -and (-not $anyDup)) }
-        if ($null -ne $btnReplace)   { $btnReplace.Enabled   = ($script:AllPrereqsMet -and (-not $anyInPlace)) }
+        # Check if all CHECKED architectures already have duplicates
+        $allCheckedDup = $true
+        if (($null -ne $chkX64) -and $chkX64.Checked -and (-not $stX64.HasDuplicate)) { $allCheckedDup = $false }
+        if (($null -ne $chkX86) -and $chkX86.Checked -and (-not $stX86.HasDuplicate)) { $allCheckedDup = $false }
+        $allCheckedInPlace = $true
+        if (($null -ne $chkX64) -and $chkX64.Checked -and (-not ($stX64.HasInPlace -or $stX64.HasOrphanPatch))) { $allCheckedInPlace = $false }
+        if (($null -ne $chkX86) -and $chkX86.Checked -and (-not ($stX86.HasInPlace -or $stX86.HasOrphanPatch))) { $allCheckedInPlace = $false }
+        if ($null -ne $btnDuplicate) { $btnDuplicate.Enabled = ($script:AllPrereqsMet -and (-not $allCheckedDup)) }
+        if ($null -ne $btnReplace)   { $btnReplace.Enabled   = ($script:AllPrereqsMet -and (-not $allCheckedInPlace)) }
+        # Disable x86 checkbox if WoW6432Node mirror is missing (x86 patch would fail)
+        if ($null -ne $chkX86) {
+            if ($script:Wow64Missing) {
+                if ($chkX86.Checked) { $chkX86.Checked = $false }
+                $chkX86.Enabled = $false
+            } else {
+                # Re-check x86 if we previously force-unchecked it (checkbox was disabled by us)
+                if (-not $chkX86.Enabled) { $chkX86.Checked = $true }
+                $chkX86.Enabled = $script:AllPrereqsMet
+            }
+        }
         if ($null -ne $btnOpenPs2)   { $btnOpenPs2.Enabled   = ($script:AllPrereqsMet -and $script:AnyInstalled) }
         $anyArchChecked = (($null -ne $chkX64) -and $chkX64.Checked) -or (($null -ne $chkX86) -and $chkX86.Checked)
         $anyCheckedInstalled = $false
@@ -1700,6 +1862,7 @@ function Update-AllStatus {
     # Refreshes all prerequisite indicators then delegates button states to Update-ButtonStates.
     $allMet = $true
     $anyInstalled = $false
+    $script:Wow64Missing = $false
     Set-PrereqIcon $lblNetFx3Icon 'Busy'
     Set-PrereqIcon $lblPs2Icon 'Busy'
     $mainForm.Refresh()
@@ -1708,9 +1871,9 @@ function Update-AllStatus {
     $netFx3State = Get-WindowsOptionalFeature -Online -FeatureName $featureNameNetFx3 -ErrorAction SilentlyContinue
     $netFx3Ok = ($netFx3State -and $netFx3State.State -eq 'Enabled')
     if ($netFx3Ok) {
-        Set-PrereqIcon $lblNetFx3Icon 'OK'; $btnNetFx3.Enabled = $false
+        Set-PrereqIcon $lblNetFx3Icon 'OK'; $btnNetFx3.Text = 'Disable'; $btnNetFx3.Enabled = $true
     } else {
-        Set-PrereqIcon $lblNetFx3Icon 'Fail'; $btnNetFx3.Enabled = $true; $allMet = $false
+        Set-PrereqIcon $lblNetFx3Icon 'Fail'; $btnNetFx3.Text = 'Enable'; $btnNetFx3.Enabled = $true; $allMet = $false
     }
     $lblNetFx3Icon.Refresh()
     # --- PS2 engine ---
@@ -1720,21 +1883,29 @@ function Update-AllStatus {
         $ps2State = Get-WindowsOptionalFeature -Online -FeatureName $featureNameRoot -ErrorAction SilentlyContinue
         $ps2Ok = ($ps2State -and $ps2State.State -eq 'Enabled')
         if ($ps2Ok) {
-            Set-PrereqIcon $lblPs2Icon 'OK'; $btnPs2.Enabled = $false; $anyInstalled = $true
+            Set-PrereqIcon $lblPs2Icon 'OK'; $btnPs2.Text = 'Uninstall'; $btnPs2.Enabled = $true; $anyInstalled = $true
         } else {
-            Set-PrereqIcon $lblPs2Icon 'Fail'; $btnPs2.Enabled = $netFx3Ok; $allMet = $false
+            Set-PrereqIcon $lblPs2Icon 'Fail'; $btnPs2.Text = 'Install'; $btnPs2.Enabled = $netFx3Ok; $allMet = $false
         }
     } else {
         $zipPresent = [System.IO.File]::Exists($ps2DlcZipPath)
-        $gacPresent = [System.IO.Directory]::Exists([System.IO.Path]::Combine($env:SystemRoot, 'assembly', 'GAC_MSIL', 'System.Management.Automation'))
-        $regPresent = $null -ne (Get-ItemProperty -Path $registryKeyPath -ErrorAction SilentlyContinue)
+        $gacPresent   = [System.IO.Directory]::Exists([System.IO.Path]::Combine($env:SystemRoot, 'assembly', 'GAC_MSIL', 'System.Management.Automation'))
+        $regPresent   = $null -ne (Get-ItemProperty -Path $registryKeyPath -ErrorAction SilentlyContinue)
+        $wow64Present = Test-Wow64RegistryPresent
         $dlcOk = ($gacPresent -and $regPresent)
-        if ($dlcOk) {
-            Set-PrereqIcon $lblPs2Icon 'OK'; $btnPs2.Enabled = $false; $btnPs2Download.Enabled = $false
+        if ($dlcOk -and $wow64Present) {
+            Set-PrereqIcon $lblPs2Icon 'OK'
+            $btnPs2.Text = 'Uninstall'; $btnPs2.Enabled = $true; $btnPs2Download.Enabled = $false
             $lblPs2Text.Text = 'PS 2.0 Engine (ps2DLC installed)'
-            $tipProvider.SetToolTip($lblPs2Text, "ps2DLC assemblies are in the legacy GAC and`nPowerShell\1 registry key is present.")
+            $tipProvider.SetToolTip($lblPs2Text, "ps2DLC assemblies are in the legacy GAC,`nPowerShell\1 registry key is present (both views).")
+        } elseif ($dlcOk) {
+            Set-PrereqIcon $lblPs2Icon 'OK'
+            $btnPs2.Text = 'Install'; $btnPs2.Enabled = $true; $btnPs2Download.Enabled = $false
+            $script:Wow64Missing = $true
+            $lblPs2Text.Text = 'PS 2.0 Engine (ps2DLC installed) [WoW6432Node MISSING]'
+            $tipProvider.SetToolTip($lblPs2Text, "ps2DLC is installed but WoW6432Node registry mirror is missing.`nClick Install to create it (required for x86 patch).`nx64 patch works without it.")
         } else {
-            Set-PrereqIcon $lblPs2Icon 'Fail'; $btnPs2.Enabled = $zipPresent; $allMet = $false
+            Set-PrereqIcon $lblPs2Icon 'Fail'; $btnPs2.Text = 'Install'; $btnPs2.Enabled = $zipPresent; $allMet = $false
             $btnPs2Download.Enabled = (-not $zipPresent)
             $lblPs2Text.Text = if ($zipPresent) { 'PS 2.0 Engine (ps2DLC ready)' } else { 'PS 2.0 Engine (ps2DLC.zip NOT FOUND!)' }
             $tipProvider.SetToolTip($lblPs2Text, $(if ($zipPresent) {
@@ -1935,8 +2106,11 @@ $btnShortcutCreate.Add_Click({
 $btnNetFx3.Add_Click({
     Disable-AllActionButtons
     Set-PrereqIcon $lblNetFx3Icon 'Busy'; $lblNetFx3Icon.Refresh()
-    Write-Log '=== .NET Framework 3.5 ==='
-    Install-NetFx3Feature | Out-Null
+    if ($btnNetFx3.Text -eq 'Disable') {
+        Invoke-DismFeatureCommand -Action 'Disable' -FeatureName $featureNameNetFx3 -FriendlyName '.NET Framework 3.5' | Out-Null
+    } else {
+        Install-NetFx3Feature | Out-Null
+    }
     Write-LogSeparator
     Invoke-NotifySound
     Update-AllStatus
@@ -1945,12 +2119,28 @@ $btnNetFx3.Add_Click({
 $btnPs2.Add_Click({
     Disable-AllActionButtons
     Set-PrereqIcon $lblPs2Icon 'Busy'; $lblPs2Icon.Refresh()
-    if ($script:FeatureAvailable) {
-        Write-Log '=== PS 2.0 Feature ==='
-        Install-Ps2Feature | Out-Null
+    if ($btnPs2.Text -eq 'Uninstall') {
+        if ($script:FeatureAvailable) {
+            Invoke-DismFeatureCommand -Action 'Disable' -FeatureName $featureNameRoot -FriendlyName 'PowerShell 2.0' | Out-Null
+        } else {
+            Write-Log '=== Uninstalling ps2DLC ==='
+            Uninstall-Ps2DlcPackage
+        }
     } else {
-        Write-Log '=== ps2DLC ==='
-        Install-Ps2DlcPackage | Out-Null
+        if ($script:FeatureAvailable) {
+            Write-Log '=== PS 2.0 Feature ==='
+            Install-Ps2Feature | Out-Null
+        } else {
+            $gacAlready = [System.IO.Directory]::Exists([System.IO.Path]::Combine($env:SystemRoot, 'assembly', 'GAC_MSIL', 'System.Management.Automation'))
+            $regAlready = $null -ne (Get-ItemProperty -Path $registryKeyPath -ErrorAction SilentlyContinue)
+            if ($gacAlready -and $regAlready -and -not (Test-Wow64RegistryPresent)) {
+                Write-Log '=== WoW6432Node Registry Fix ==='
+                Install-Wow64RegistryMirror | Out-Null
+            } else {
+                Write-Log '=== ps2DLC ==='
+                Install-Ps2DlcPackage | Out-Null
+            }
+        }
     }
     Write-LogSeparator
     Invoke-NotifySound
@@ -2034,12 +2224,9 @@ $btnUninstall.Add_Click({
     Disable-AllActionButtons
     if ($script:FeatureAvailable) {
         Write-Log '=== UNINSTALL (Feature) ==='
-        try {
-            Disable-WindowsOptionalFeature -Online -FeatureName $featureNameRoot -NoRestart -ErrorAction Stop | Out-Null
-            Write-Log 'PS 2.0 feature disabled.'
-        } catch { Write-Log "ERROR : $($_.Exception.Message)" 'Error' }
+        Invoke-DismFeatureCommand -Action 'Disable' -FeatureName $featureNameRoot -FriendlyName 'PowerShell 2.0' | Out-Null
     } else {
-        Write-Log '=== UNINSTALL (Patch) ==='
+        Write-Log '=== UNINSTALL (Patch + ps2DLC) ==='
         $archTargets = @()
         if (($null -ne $chkX64) -and $chkX64.Checked) {
             $archTargets += @{ Dir=$pathSystem32Ps; Label='x64' }
@@ -2054,6 +2241,8 @@ $btnUninstall.Add_Click({
                 Uninstall-BinaryPatch -PsDir $entry.Dir -ArchLabel $entry.Label
             }
         }
+        # Remove ps2DLC artifacts (GAC assemblies + registry keys both views)
+        Uninstall-Ps2DlcPackage
     }
     Uninstall-Shortcuts -Dir $txtShortcutDir.Text
     Write-Log 'Done.'
