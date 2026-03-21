@@ -23,7 +23,7 @@ On older builds where PS 2.0 is still available as a Windows Optional Feature, t
 2. *(Optional)* Place `ps2DLC.zip` next to the script.
 3. Double-click `PowerShell_2.0_Patcher.bat` (auto-elevates to admin).
 4. Click **Enable** next to ".NET Framework 3.5" if not already installed.
-5. Click **Install** next to "PS 2.0 Engine" to deploy ps2DLC assemblies.
+5. Click **Install** next to "PS 2.0 Engine" to deploy ps2DLC assemblies and create WoW64 registry entries.
 6. Click **Duplicate Powershell** or **Patch existing PowerShell**.
 7. Click **Open PS 2.0** or create shortcuts from interface.
 
@@ -53,6 +53,8 @@ See documentation at https://github.com/Freenitial/PowerShell_2.0_Patcher/blob/m
 - **Pattern compatibility**: if a future build restructures the native stub, the byte patterns may not match. The tool detects this and aborts without making changes.
 - **CLR2 removal**: if Microsoft removes the CLR2 runtime itself (not just the PS 2.0 feature), the patch will no longer work.
 - **x86 on 32-bit OS**: the x86 pattern has been verified on 64-bit WoW64 builds. 32-bit native Windows 10 builds have not been tested.
+- **WoW64 registry**: if the `WoW6432Node\Microsoft\PowerShell\1` key is deleted externally (e.g. registry cleaner), the x86 patch will stop working. Click **Install** (or re-run with `-Unattended`) to recreate the mirror.
+- **GAC uninstall**: some ps2DLC assemblies may be locked by running processes. Registry keys are always cleaned, but locked DLLs may persist until reboot.
 
 ## References
 
