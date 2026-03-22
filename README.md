@@ -37,8 +37,8 @@ After patching, launch PS 2.0 via the **Open PS 2.0** button or shortcut and ver
 Download `ps2DLC.zip` from [Microsoft](https://download.microsoft.com/download/2b37839b-e146-465a-a78c-c9066609c553/ps2DLC.zip) (or from this repo)
 
 Place `ps2DLC.zip` next to the script, then run :
-```
-powershell -ExecutionPolicy Bypass -File PowerShell_2.0_Patcher.bat -Unattended
+```cmd
+PowerShell_2.0_Patcher.bat -Unattended
 ```
 
 -----
